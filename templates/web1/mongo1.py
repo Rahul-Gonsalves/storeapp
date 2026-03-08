@@ -1,8 +1,10 @@
-
+import os
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 
-uri = "mongodb+srv://tungisu:pass@cluster1.cryxyah.mongodb.net/?appName=Cluster1"
+uri = os.getenv("MONGODB_URI")
+if not uri:
+    raise RuntimeError("Set MONGODB_URI before running this script.")
 
 # Create a new client and connect to the server
 client = MongoClient(uri, server_api=ServerApi('1'))

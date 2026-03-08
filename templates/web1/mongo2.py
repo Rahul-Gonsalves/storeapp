@@ -1,12 +1,17 @@
 import pymongo
 import sys
+import os
 
 # Replace the placeholder data with your Atlas connection string. Be sure it includes
 # a valid username and password! Note that in a production environment,
 # you should not store your password in plain-text here.
 
 try:
-  client = pymongo.MongoClient("mongodb+srv://tungisu:pass@cluster1.cryxyah.mongodb.net/?appName=Cluster1")
+  mongo_uri = os.getenv("MONGODB_URI")
+  if not mongo_uri:
+    print("Set MONGODB_URI before running this script.")
+    sys.exit(1)
+  client = pymongo.MongoClient(mongo_uri)
   
 # return a friendly error if a URI error is thrown 
 except pymongo.errors.ConfigurationError:
