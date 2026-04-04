@@ -1,4 +1,6 @@
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
 
 public class Application {
 
@@ -72,39 +74,43 @@ public class Application {
 
 
     private Application() {
-        try {
-            String dbType = System.getenv().getOrDefault("STOREAPP_DB", "mysql").trim().toLowerCase();
+        String dataMode = System.getenv().getOrDefault("STOREAPP_DATA_MODE", "rest").trim().toLowerCase();
 
-            if ("sqlite".equals(dbType)) {
-                Class.forName("org.sqlite.JDBC");
-                String sqlitePath = System.getenv().getOrDefault("STOREAPP_SQLITE_PATH", "store.db");
-                String url = "jdbc:sqlite:" + sqlitePath;
-                connection = DriverManager.getConnection(url);
+        if ("jdbc".equals(dataMode)) {
+            try {
+                String dbType = System.getenv().getOrDefault("STOREAPP_DB", "mysql").trim().toLowerCase();
+
+                if ("sqlite".equals(dbType)) {
+                    Class.forName("org.sqlite.JDBC");
+                    String sqlitePath = System.getenv().getOrDefault("STOREAPP_SQLITE_PATH", "store.db");
+                    String url = "jdbc:sqlite:" + sqlitePath;
+                    connection = DriverManager.getConnection(url);
+                }
+                else {
+                    Class.forName("com.mysql.cj.jdbc.Driver");
+                    String host = System.getenv().getOrDefault("STOREAPP_DB_HOST", "localhost");
+                    String port = System.getenv().getOrDefault("STOREAPP_DB_PORT", "3306");
+                    String database = System.getenv().getOrDefault("STOREAPP_DB_NAME", "storeapp");
+                    String user = System.getenv().getOrDefault("STOREAPP_DB_USER", "root");
+                    String password = System.getenv().getOrDefault("STOREAPP_DB_PASSWORD", "");
+                    String url = "jdbc:mysql://" + host + ":" + port + "/" + database + "?serverTimezone=UTC";
+                    connection = DriverManager.getConnection(url, user, password);
+                }
+
+                dataAdapter = new DataAdapter(connection);
             }
-            else {
-                Class.forName("com.mysql.cj.jdbc.Driver");
-                String host = System.getenv().getOrDefault("STOREAPP_DB_HOST", "localhost");
-                String port = System.getenv().getOrDefault("STOREAPP_DB_PORT", "3306");
-                String database = System.getenv().getOrDefault("STOREAPP_DB_NAME", "storeapp");
-                String user = System.getenv().getOrDefault("STOREAPP_DB_USER", "root");
-                String password = System.getenv().getOrDefault("STOREAPP_DB_PASSWORD", "");
-                String url = "jdbc:mysql://" + host + ":" + port + "/" + database + "?serverTimezone=UTC";
-                connection = DriverManager.getConnection(url, user, password);
+            catch (ClassNotFoundException ex) {
+                System.out.println("JDBC driver is not installed. System exits with error!");
+                ex.printStackTrace();
+                System.exit(1);
             }
-
-            dataAdapter = new DataAdapter(connection);
-
-        }
-        catch (ClassNotFoundException ex) {
-            System.out.println("JDBC driver is not installed. System exits with error!");
-            ex.printStackTrace();
-            System.exit(1);
-        }
-
-        catch (SQLException ex) {
-            System.out.println("Database is not ready. System exits with error!" + ex.getMessage());
-            ex.printStackTrace();
-            System.exit(2);
+            catch (SQLException ex) {
+                System.out.println("Database is not ready. System exits with error!" + ex.getMessage());
+                ex.printStackTrace();
+                System.exit(2);
+            }
+        } else {
+            dataAdapter = new DataAdapter();
         }
 
         productController = new ProductController(productView);

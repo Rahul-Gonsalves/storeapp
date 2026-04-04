@@ -1,5 +1,66 @@
 # Running Store App
 
+## Homework 2 mode
+
+### 1. Install backend dependencies
+
+```bash
+pip3 install -r requirements.txt
+```
+
+### 2. Start the REST backend
+
+Set your database environment variables, then run:
+
+```bash
+python3 backend_api.py
+```
+
+Important environment variables:
+
+```bash
+STOREAPP_DB_HOST=localhost
+STOREAPP_DB_PORT=3306
+STOREAPP_DB_NAME=storeapp
+STOREAPP_DB_USER=root
+STOREAPP_DB_PASSWORD=your_password
+
+STOREAPP_REDIS_HOST=localhost
+STOREAPP_REDIS_PORT=6379
+STOREAPP_REDIS_USER=
+STOREAPP_REDIS_PASSWORD=
+STOREAPP_REDIS_DB=0
+
+MONGODB_URI=mongodb://localhost:27017/
+STOREAPP_MONGO_DB=storeapp
+STOREAPP_MONGO_COLLECTION=orders
+STOREAPP_API_HOST=127.0.0.1
+STOREAPP_API_PORT=9000
+```
+
+### 3. Compile and run the Java client in REST mode
+
+```bash
+javac -cp "lib/*" -d bin src/*.java
+STOREAPP_DATA_MODE=rest \
+STOREAPP_API_BASE_URL=http://127.0.0.1:9000 \
+java -cp "bin:lib/*" Application
+```
+
+### 4. Optional migration from Homework 1 data
+
+This copies products and orders from your old Homework 1 database into Redis and MongoDB.
+
+```bash
+python3 migrate_homework1_data.py
+```
+
+To migrate from MySQL instead of `store.db`:
+
+```bash
+STOREAPP_MIGRATE_SOURCE=mysql python3 migrate_homework1_data.py
+```
+
 ## 1) Compile (both SQLite and MySQL modes)
 From project root:
 

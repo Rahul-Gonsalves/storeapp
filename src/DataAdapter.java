@@ -1,109 +1,95 @@
-import java.sql.*;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.util.ArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class DataAdapter {
-    private Connection connection;
+    private final String baseUrl;
+    private final HttpClient client;
 
-    public DataAdapter(Connection connection) {
-        this.connection = connection;
+    public DataAdapter() {
+        this(null);
+    }
+
+    public DataAdapter(Connection ignoredConnection) {
+        this.baseUrl = System.getenv().getOrDefault("STOREAPP_API_BASE_URL", "http://127.0.0.1:9000");
+        this.client = HttpClient.newHttpClient();
     }
 
     public Product loadProduct(int id) {
         try {
-            String query = "SELECT ProductID, Name, Price, Quantity, SellerID FROM Products WHERE ProductID = " + id;
+            HttpResult result = send("GET", "/products/" + id, null);
+            if (result.statusCode == 404) return null;
+            if (result.statusCode != 200) throw new RuntimeException(result.body);
 
-            Statement statement = connection.createStatement();
-            ResultSet resultSet = statement.executeQuery(query);
-            if (resultSet.next()) {
-                Product product = new Product();
-                product.setProductID(resultSet.getInt(1));
-                product.setName(resultSet.getString(2));
-                product.setPrice(resultSet.getDouble(3));
-                product.setQuantity(resultSet.getDouble(4));
-                product.setSellerID(resultSet.getInt(5));
-                resultSet.close();
-                statement.close();
-
-                return product;
-            }
-
-        } catch (SQLException e) {
-            System.out.println("Database access error!");
+            Product product = new Product();
+            product.setProductID(extractInt(result.body, "ProductID"));
+            product.setName(extractString(result.body, "ProductName"));
+            product.setPrice(extractDouble(result.body, "Price"));
+            product.setQuantity(extractDouble(result.body, "Quantity"));
+            product.setSellerID(extractOptionalInt(result.body, "SellerID", 0));
+            return product;
+        } catch (Exception e) {
+            System.out.println("API access error!");
             e.printStackTrace();
+            return null;
         }
-        return null;
     }
 
     public boolean saveProduct(Product product) {
         try {
-            PreparedStatement statement = connection.prepareStatement("SELECT * FROM Products WHERE ProductID = ?");
-            statement.setInt(1, product.getProductID());
-
-            ResultSet resultSet = statement.executeQuery();
-
-            if (resultSet.next()) { // this product exists, update its fields
-                statement = connection.prepareStatement("UPDATE Products SET Name = ?, Price = ?, Quantity = ?, SellerID = ? WHERE ProductID = ?");
-                statement.setString(1, product.getName());
-                statement.setDouble(2, product.getPrice());
-                statement.setDouble(3, product.getQuantity());
-                statement.setInt(4, product.getSellerID());
-                statement.setInt(5, product.getProductID());
-            }
-            else { // this product does not exist, use insert into
-                statement = connection.prepareStatement("INSERT INTO Products (ProductID, Name, Price, Quantity, SellerID) VALUES (?, ?, ?, ?, ?)");
-                statement.setInt(1, product.getProductID());
-                statement.setString(2, product.getName());
-                statement.setDouble(3, product.getPrice());
-                statement.setDouble(4, product.getQuantity());
-                statement.setInt(5, product.getSellerID());
-            }
-            statement.execute();
-            resultSet.close();
-            statement.close();
-            return true;        // save successfully
-
-        } catch (SQLException e) {
-            System.out.println("Database access error!");
+            String body = "{"
+                    + "\"ProductID\":" + product.getProductID() + ","
+                    + "\"ProductName\":\"" + escape(product.getName()) + "\","
+                    + "\"Price\":" + product.getPrice() + ","
+                    + "\"Quantity\":" + product.getQuantity() + ","
+                    + "\"SellerID\":" + product.getSellerID()
+                    + "}";
+            HttpResult result = send("POST", "/products/" + product.getProductID(), body);
+            return result.statusCode == 200;
+        } catch (Exception e) {
+            System.out.println("API access error!");
             e.printStackTrace();
-            return false; // cannot save!
+            return false;
         }
     }
 
     public Order loadOrder(int id) {
         try {
-            Order order = null;
-            Statement statement = connection.createStatement();
-            ResultSet resultSet = statement.executeQuery("SELECT * FROM Orders WHERE OrderID = " + id);
+            HttpResult result = send("GET", "/orders/" + id, null);
+            if (result.statusCode == 404) return null;
+            if (result.statusCode != 200) throw new RuntimeException(result.body);
 
-            if (resultSet.next()) {
-                order = new Order();
-                order.setOrderID(resultSet.getInt("OrderID"));
-                order.setBuyerID(resultSet.getInt("CustomerID"));
-                order.setTotalCost(resultSet.getDouble("TotalCost"));
-                order.setDate(resultSet.getString("OrderDate"));
-            }
-            resultSet.close();
+            Order order = new Order();
+            order.setOrderID(extractInt(result.body, "OrderID"));
+            order.setBuyerID(extractOptionalInt(result.body, "UserID", extractOptionalInt(result.body, "BuyerID", 0)));
+            order.setTotalCost(extractDouble(result.body, "TotalCost"));
+            order.setTotalTax(extractOptionalDouble(result.body, "TotalTax", 0.0));
+            order.setDate(extractString(result.body, "OrderDate"));
 
-            // loading the order lines for this order
-            if (order != null) {
-                resultSet = statement.executeQuery("SELECT * FROM OrderLine WHERE OrderID = " + id);
-
-                while (resultSet.next()) {
+            Matcher detailsMatcher = Pattern.compile("\"Details\"\\s*:\\s*\\[(.*)]", Pattern.DOTALL).matcher(result.body);
+            if (detailsMatcher.find()) {
+                Matcher itemMatcher = Pattern.compile("\\{[^{}]*}").matcher(detailsMatcher.group(1));
+                while (itemMatcher.find()) {
+                    String item = itemMatcher.group();
                     OrderLine line = new OrderLine();
-                    line.setOrderID(resultSet.getInt(1));
-                    line.setProductID(resultSet.getInt(2));
-                    line.setQuantity(resultSet.getDouble(3));
-                    line.setCost(resultSet.getDouble(4));
+                    line.setOrderID(order.getOrderID());
+                    line.setProductID(extractInt(item, "ProductID"));
+                    line.setQuantity(extractDouble(item, "Quantity"));
+                    line.setCost(extractDouble(item, "Cost"));
                     order.addLine(line);
                 }
-                resultSet.close();
             }
-
-            statement.close();
-
             return order;
-
-        } catch (SQLException e) {
-            System.out.println("Database access error!");
+        } catch (Exception e) {
+            System.out.println("API access error!");
             e.printStackTrace();
             return null;
         }
@@ -111,31 +97,30 @@ public class DataAdapter {
 
     public boolean saveOrder(Order order) {
         try {
-            PreparedStatement statement = connection.prepareStatement("INSERT INTO Orders (OrderID, OrderDate, CustomerID, TotalCost, TotalTax) VALUES (?, ?, ?, ?, ?)");
-            statement.setInt(1, order.getOrderID());
-            statement.setInt(3, order.getBuyerID());
-            statement.setString(2, order.getDate());
-            statement.setDouble(4, order.getTotalCost());
-            statement.setDouble(5, order.getTotalTax());
-
-            statement.execute();    // commit to the database;
-            statement.close();
-
-            statement = connection.prepareStatement("INSERT INTO OrderLine VALUES (?, ?, ?, ?)");
-
-            for (OrderLine line: order.getLines()) { // store for each order line!
-                statement.setInt(1, line.getOrderID());
-                statement.setInt(2, line.getProductID());
-                statement.setDouble(3, line.getQuantity());
-                statement.setDouble(4, line.getCost());
-
-                statement.execute();    // commit to the database;
+            StringBuilder details = new StringBuilder("[");
+            for (int i = 0; i < order.getLines().size(); i++) {
+                OrderLine line = order.getLines().get(i);
+                if (i > 0) details.append(",");
+                details.append("{")
+                        .append("\"ProductID\":").append(line.getProductID()).append(",")
+                        .append("\"Quantity\":").append(line.getQuantity()).append(",")
+                        .append("\"Cost\":").append(line.getCost())
+                        .append("}");
             }
-            statement.close();
-            return true; // save successfully!
-        }
-        catch (SQLException e) {
-            System.out.println("Database access error!");
+            details.append("]");
+
+            String body = "{"
+                    + "\"OrderID\":" + order.getOrderID() + ","
+                    + "\"UserID\":" + order.getBuyerID() + ","
+                    + "\"OrderDate\":\"" + escape(order.getDate()) + "\","
+                    + "\"TotalCost\":" + order.getTotalCost() + ","
+                    + "\"TotalTax\":" + order.getTotalTax() + ","
+                    + "\"Details\":" + details
+                    + "}";
+            HttpResult result = send("POST", "/orders/" + order.getOrderID(), body);
+            return result.statusCode == 200;
+        } catch (Exception e) {
+            System.out.println("API access error!");
             e.printStackTrace();
             return false;
         }
@@ -143,62 +128,99 @@ public class DataAdapter {
 
     public int getNextOrderID() {
         try {
-            Statement statement = connection.createStatement();
-            ResultSet resultSet = statement.executeQuery("SELECT COALESCE(MAX(OrderID), 0) + 1 FROM Orders");
-            int nextId = 1;
-            if (resultSet.next()) {
-                nextId = resultSet.getInt(1);
-            }
-            resultSet.close();
-            statement.close();
-            return nextId;
-        }
-        catch (SQLException e) {
-            System.out.println("Database access error!");
+            HttpResult result = send("GET", "/orders/next-id", null);
+            if (result.statusCode != 200) throw new RuntimeException(result.body);
+            return extractInt(result.body, "nextOrderID");
+        } catch (Exception e) {
+            System.out.println("API access error!");
             e.printStackTrace();
             return -1;
         }
     }
 
     public boolean updateProductQuantity(int productID, double newQuantity) {
-        try {
-            PreparedStatement statement = connection.prepareStatement("UPDATE Products SET Quantity = ? WHERE ProductID = ?");
-            statement.setDouble(1, newQuantity);
-            statement.setInt(2, productID);
-            statement.execute();
-            statement.close();
-            return true;
-        }
-        catch (SQLException e) {
-            System.out.println("Database access error!");
-            e.printStackTrace();
-            return false;
-        }
+        Product product = loadProduct(productID);
+        if (product == null) return false;
+        product.setQuantity(newQuantity);
+        return saveProduct(product);
     }
 
     public User loadUser(String username, String password) {
         try {
+            String body = "{"
+                    + "\"username\":\"" + escape(username) + "\","
+                    + "\"password\":\"" + escape(password) + "\""
+                    + "}";
+            HttpResult result = send("POST", "/users/login", body);
+            if (result.statusCode == 404) return null;
+            if (result.statusCode != 200) throw new RuntimeException(result.body);
 
-            PreparedStatement statement = connection.prepareStatement("SELECT * FROM Users WHERE UserName = ? AND Password = ?");
-            statement.setString(1, username);
-            statement.setString(2, password);
-            ResultSet resultSet = statement.executeQuery();
-            if (resultSet.next()) {
-                User user = new User();
-                user.setUserID(resultSet.getInt("UserID"));
-                user.setUsername(resultSet.getString("UserName"));
-                user.setPassword(resultSet.getString("Password"));
-                user.setFullName(resultSet.getString("DisplayName"));
-                resultSet.close();
-                statement.close();
-
-                return user;
-            }
-
-        } catch (SQLException e) {
-            System.out.println("Database access error!");
+            User user = new User();
+            user.setUserID(extractInt(result.body, "UserID"));
+            user.setUsername(extractString(result.body, "UserName"));
+            user.setPassword(extractString(result.body, "Password"));
+            user.setFullName(extractString(result.body, "DisplayName"));
+            return user;
+        } catch (Exception e) {
+            System.out.println("API access error!");
             e.printStackTrace();
+            return null;
         }
-        return null;
+    }
+
+    private HttpResult send(String method, String path, String body) throws IOException, InterruptedException {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Accept", "application/json");
+        if (body == null) {
+            builder.method(method, HttpRequest.BodyPublishers.noBody());
+        } else {
+            builder.header("Content-Type", "application/json");
+            builder.method(method, HttpRequest.BodyPublishers.ofString(body));
+        }
+        HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        return new HttpResult(response.statusCode(), response.body());
+    }
+
+    private int extractInt(String json, String field) {
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*(-?\\d+)").matcher(json);
+        if (!matcher.find()) throw new RuntimeException("Missing integer field: " + field);
+        return Integer.parseInt(matcher.group(1));
+    }
+
+    private int extractOptionalInt(String json, String field, int defaultValue) {
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*(-?\\d+)").matcher(json);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : defaultValue;
+    }
+
+    private double extractDouble(String json, String field) {
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)").matcher(json);
+        if (!matcher.find()) throw new RuntimeException("Missing numeric field: " + field);
+        return Double.parseDouble(matcher.group(1));
+    }
+
+    private double extractOptionalDouble(String json, String field, double defaultValue) {
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)").matcher(json);
+        return matcher.find() ? Double.parseDouble(matcher.group(1)) : defaultValue;
+    }
+
+    private String extractString(String json, String field) {
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"").matcher(json);
+        if (!matcher.find()) throw new RuntimeException("Missing string field: " + field);
+        return matcher.group(1).replace("\\\"", "\"").replace("\\\\", "\\");
+    }
+
+    private String escape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static class HttpResult {
+        private final int statusCode;
+        private final String body;
+
+        private HttpResult(int statusCode, String body) {
+            this.statusCode = statusCode;
+            this.body = body;
+        }
     }
 }
